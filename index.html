@@ -1375,17 +1375,23 @@ async function lookupDVDUPC(code){
   }
 }
 
-/* shared iTunes helper: try a direct fetch first, fall back to JSONP */
+/* shared iTunes helper: CA storefront first (US fallback), fetch first (JSONP fallback) */
 async function itunesSearch(term, onResults, onFail){
-  const base = "https://itunes.apple.com/search?media=movie&limit=8&term=" + encodeURIComponent(term);
-  try{
-    const res = await fetch(base);
-    if(res.ok){
-      const data = await res.json();
-      onResults((data.results || []).filter(r => r.trackName || r.collectionName));
-      return;
-    }
-  }catch(e){ /* fall through to JSONP */ }
+  const url = ctry => "https://itunes.apple.com/search?media=movie&entity=movie&limit=12&country=" + ctry + "&term=" + encodeURIComponent(term);
+  const keep = r => r.trackName || r.collectionName;
+  for(const ctry of ["CA","US"]){
+    try{
+      const res = await fetch(url(ctry));
+      if(res.ok){
+        const data = await res.json();
+        const results = (data.results || []).filter(keep);
+        if(results.length){ onResults(results); return; }
+        /* empty from this storefront — try the next one */
+        continue;
+      }
+    }catch(e){ break; /* fetch blocked entirely — go to JSONP */ }
+  }
+  /* JSONP fallback (also covers the both-storefronts-empty case gracefully) */
   const cb = "itunesCB_" + Date.now() + Math.floor(Math.random()*1000);
   const script = document.createElement("script");
   const cleanup = () => { delete window[cb]; script.remove(); };
@@ -1393,9 +1399,9 @@ async function itunesSearch(term, onResults, onFail){
   window[cb] = data => {
     clearTimeout(timer);
     cleanup();
-    onResults((data.results || []).filter(r => r.trackName || r.collectionName));
+    onResults((data.results || []).filter(keep));
   };
-  script.src = base + "&callback=" + cb;
+  script.src = url("CA") + "&callback=" + cb;
   script.onerror = () => { clearTimeout(timer); cleanup(); onFail(); };
   document.body.appendChild(script);
 }
