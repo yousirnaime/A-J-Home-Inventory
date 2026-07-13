@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Digital Warehouse Inventory</title>
+<title>The Shared Shelf</title>
 <style>
   :root{
     --ink:#2e2a24;
@@ -794,6 +794,66 @@
   @media (prefers-reduced-motion: reduce){
     *,*::before,*::after{animation:none !important;transition:none !important}
   }
+
+  /* ================= CAMERA SCANNER ================= */
+  .camoverlay{
+    position:fixed;inset:0;
+    background:rgba(10,9,6,.92);
+    display:none;
+    align-items:center;justify-content:center;
+    z-index:80;
+  }
+  .camoverlay.open{display:flex;animation:fadein .2s ease-out}
+  .camframe{
+    position:relative;
+    width:min(560px, 94vw);
+    border-radius:6px;
+    overflow:hidden;
+    box-shadow:0 24px 60px rgba(0,0,0,.7);
+    background:#000;
+  }
+  .camframe video{
+    display:block;
+    width:100%;
+    max-height:72vh;
+    object-fit:cover;
+  }
+  .camtarget{
+    position:absolute;
+    left:50%;top:44%;
+    width:72%;height:120px;
+    transform:translate(-50%,-50%);
+    border-radius:8px;
+    box-shadow:0 0 0 2000px rgba(0,0,0,.35);
+    pointer-events:none;
+  }
+  .camtarget::before, .camtarget::after{
+    content:"";position:absolute;width:26px;height:26px;
+    border:3px solid rgba(220,194,126,.95);
+  }
+  .camtarget::before{top:-2px;left:-2px;border-right:none;border-bottom:none;border-radius:6px 0 0 0}
+  .camtarget::after{bottom:-2px;right:-2px;border-left:none;border-top:none;border-radius:0 0 6px 0}
+  .camtarget .scanline{display:none}
+  .camstatus{
+    position:absolute;left:0;right:0;bottom:0;
+    padding:12px 16px;
+    text-align:center;
+    font-size:14px;font-style:italic;
+    color:#f2ead6;
+    background:linear-gradient(180deg, transparent, rgba(0,0,0,.75));
+    text-shadow:0 1px 2px rgba(0,0,0,.8);
+  }
+  .camclose{
+    position:absolute;top:8px;right:8px;
+    width:38px;height:38px;
+    background:rgba(0,0,0,.55);
+    border:1px solid rgba(255,255,255,.3);
+    border-radius:50%;
+    color:#f2ead6;font-size:22px;line-height:1;
+    cursor:pointer;
+    transition:background .15s, transform .15s;
+  }
+  .camclose:hover{background:rgba(154,53,39,.8);transform:rotate(90deg)}
 </style>
 </head>
 <body data-theme="books">
@@ -891,6 +951,15 @@
 
 <div class="overlay" id="overlay">
   <div class="cardbox" id="cardbox" role="dialog" aria-modal="true"></div>
+</div>
+
+<div class="camoverlay" id="camOverlay">
+  <div class="camframe">
+    <video id="camVideo" playsinline muted></video>
+    <div class="camtarget"></div>
+    <div class="camstatus" id="camStatus">Point the camera at a barcode</div>
+    <button class="camclose" id="camClose" aria-label="Close camera">&times;</button>
+  </div>
 </div>
 
 <div id="syncbar" style="position:fixed;bottom:12px;right:12px;z-index:60;font-size:11px;font-style:italic;color:#7a7263;background:rgba(246,240,226,.92);border:1px solid #d8cfba;border-radius:12px;padding:4px 12px;box-shadow:0 2px 6px rgba(60,50,30,.2)">connecting…</div>
@@ -1809,6 +1878,72 @@ document.addEventListener("keydown", e => {
   } else if(e.key !== "Shift") scanBuf = "";
 });
 
+/* ---------- camera barcode scanner ---------- */
+let camReader = null, camActive = false, lastCamCode = "", lastCamTime = 0;
+function loadZXing(){
+  return new Promise((resolve, reject) => {
+    if(window.ZXing) return resolve(window.ZXing);
+    const s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/@zxing/library@0.20.0/umd/index.min.js";
+    s.onload = () => window.ZXing ? resolve(window.ZXing) : reject(new Error("ZXing missing"));
+    s.onerror = () => reject(new Error("ZXing failed to load"));
+    document.body.appendChild(s);
+  });
+}
+function camStatus(t){ $("camStatus").textContent = t; }
+async function openCamera(){
+  $("camOverlay").classList.add("open");
+  camStatus("Starting camera…");
+  camActive = true;
+  try{
+    const ZX = await loadZXing();
+    if(!camReader){
+      const hints = new Map();
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [
+        ZX.BarcodeFormat.EAN_13, ZX.BarcodeFormat.EAN_8,
+        ZX.BarcodeFormat.UPC_A, ZX.BarcodeFormat.UPC_E
+      ]);
+      camReader = new ZX.BrowserMultiFormatReader(hints, 300);
+    }
+    await camReader.decodeFromConstraints(
+      { audio:false, video:{ facingMode:"environment", width:{ideal:1280}, height:{ideal:720} } },
+      $("camVideo"),
+      (result, err) => {
+        if(!camActive || !result) return;
+        let code = cleanDigits(result.getText());
+        if(code.length < 8) return;
+        const now = Date.now();
+        if(code === lastCamCode && now - lastCamTime < 4000) return; /* same code, ignore repeat frames */
+        lastCamCode = code; lastCamTime = now;
+        if(navigator.vibrate) navigator.vibrate(60);
+        camStatus("Got " + code + " — looking it up…");
+        $("isbnInput").value = code;
+        lookup();
+        setTimeout(() => { if(camActive) camStatus("Point the camera at the next barcode"); }, 1600);
+      }
+    );
+    camStatus("Point the camera at a barcode");
+  }catch(e){
+    console.error(e);
+    camActive = false;
+    if(e && (e.name === "NotAllowedError" || e.name === "SecurityError")){
+      camStatus("Camera permission was denied — allow it in your browser settings and try again.");
+    } else if(e && e.name === "NotFoundError"){
+      camStatus("No camera found on this device.");
+    } else {
+      camStatus("Couldn't start the camera scanner — check your connection and try again.");
+    }
+  }
+}
+function closeCamera(){
+  camActive = false;
+  try{ if(camReader) camReader.reset(); }catch(e){}
+  $("camOverlay").classList.remove("open");
+}
+$("cameraBtn").addEventListener("click", openCamera);
+$("camClose").addEventListener("click", closeCamera);
+$("camOverlay").addEventListener("click", e => { if(e.target === $("camOverlay")) closeCamera(); });
+
 /* ---------- expose inline handlers ---------- */
 Object.assign(window, { openItem, openProfile, closeModal, setStatus, setRating,
   setReview, setDate, removeItem, toggleBothFinished, clearFilters, filtersChanged,
@@ -1816,7 +1951,7 @@ Object.assign(window, { openItem, openProfile, closeModal, setStatus, setRating,
 
 /* ---------- events ---------- */
 $("overlay").addEventListener("click", e => { if(e.target === $("overlay")) closeModal(); });
-document.addEventListener("keydown", e => { if(e.key === "Escape") closeModal(); });
+document.addEventListener("keydown", e => { if(e.key === "Escape"){ closeModal(); closeCamera(); } });
 $("lookupBtn").addEventListener("click", lookup);
 $("isbnInput").addEventListener("keydown", e => { if(e.key==="Enter") lookup(); });
 $("manualToggle").addEventListener("click", ()=> {
