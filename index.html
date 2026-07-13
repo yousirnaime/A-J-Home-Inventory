@@ -964,11 +964,15 @@
 
 <div id="syncbar" style="position:fixed;bottom:12px;right:12px;z-index:60;font-size:11px;font-style:italic;color:#7a7263;background:rgba(246,240,226,.92);border:1px solid #d8cfba;border-radius:12px;padding:4px 12px;box-shadow:0 2px 6px rgba(60,50,30,.2)">connecting…</div>
 
+<script src="config.js"></script>
 <script type="module">
 /* ============================================================
-   FIREBASE SETUP — PASTE YOUR CONFIG BELOW
+   FIREBASE SETUP
+   Preferred: keep your config in a separate config.js file in
+   the same folder (see the template) — then app updates never
+   overwrite it. Pasting values below still works as a fallback.
    ============================================================ */
-const firebaseConfig = {
+const firebaseConfig = window.FIREBASE_CONFIG || {
   apiKey: "AIzaSyBuxrOqlWgW9QNnWuxLx_AyyQHuFxgBhj8",
   authDomain: "homeinventory-aa18a.firebaseapp.com",
   databaseURL: "https://homeinventory-aa18a-default-rtdb.firebaseio.com",
@@ -1120,7 +1124,7 @@ function legacyMap(media, d){
 }
 function connect(){
   if(firebaseConfig.apiKey.startsWith("PASTE")){
-    syncStatus("⚠ Firebase config not set — open index.html and paste your config", false);
+    syncStatus("⚠ not connected — add your Firebase config to config.js", false);
     render();
     return;
   }
@@ -1371,8 +1375,17 @@ async function lookupDVDUPC(code){
   }
 }
 
-/* shared iTunes JSONP helper */
-function itunesSearch(term, onResults, onFail){
+/* shared iTunes helper: try a direct fetch first, fall back to JSONP */
+async function itunesSearch(term, onResults, onFail){
+  const base = "https://itunes.apple.com/search?media=movie&limit=8&term=" + encodeURIComponent(term);
+  try{
+    const res = await fetch(base);
+    if(res.ok){
+      const data = await res.json();
+      onResults((data.results || []).filter(r => r.trackName || r.collectionName));
+      return;
+    }
+  }catch(e){ /* fall through to JSONP */ }
   const cb = "itunesCB_" + Date.now() + Math.floor(Math.random()*1000);
   const script = document.createElement("script");
   const cleanup = () => { delete window[cb]; script.remove(); };
@@ -1382,7 +1395,7 @@ function itunesSearch(term, onResults, onFail){
     cleanup();
     onResults((data.results || []).filter(r => r.trackName || r.collectionName));
   };
-  script.src = "https://itunes.apple.com/search?media=movie&limit=8&callback=" + cb + "&term=" + encodeURIComponent(term);
+  script.src = base + "&callback=" + cb;
   script.onerror = () => { clearTimeout(timer); cleanup(); onFail(); };
   document.body.appendChild(script);
 }
